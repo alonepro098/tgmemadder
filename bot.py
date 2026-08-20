@@ -1,11 +1,23 @@
-import asyncio
-import logging
+import sys
 import os
-import json
+import logging
+import asyncio
 from datetime import datetime
 
-from telethon import TelegramClient, events, Button, errors
-from telethon.sessions import StringSession
+# Force UTF-8 stdout encoding for Windows console compatibility
+sys.stdout.reconfigure(encoding='utf-8')
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.request import HTTPXRequest
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+    ConversationHandler,
+)
 
 from config import Config
 from database import db, UserSession, ScrapingTask, SystemLog, Settings
@@ -15,8 +27,16 @@ from utils import TaskManager, LogManager, ExcelExporter
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# State storage for multi-step conversations
-USER_STATES = {}
+# Conversation states
+(
+    WAITING_PHONE,
+    WAITING_OTP,
+    WAITING_STRING_PHONE,
+    WAITING_STRING,
+    WAITING_SOURCE_LINK,
+    WAITING_TARGET_LINK,
+    WAITING_MAX_MEMBERS,
+) = range(7)
 
 def get_db_app():
     from app import create_app
@@ -24,297 +44,335 @@ def get_db_app():
 
 app = get_db_app()
 
-def get_main_menu_buttons():
-    return [
-        [Button.inline("📱 Sessions", b"menu_sessions"), Button.inline("🚀 New Task", b"menu_new_task")],
-        [Button.inline("📊 Task Status", b"menu_status"), Button.inline("📥 Export Excel", b"menu_export")],
-        [Button.inline("📋 System Logs", b"menu_logs"), Button.inline("⚙️ Settings", b"menu_settings")]
+def get_main_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("📱 Sessions", callback_data="menu_sessions"), InlineKeyboardButton("🚀 New Task", callback_data="menu_new_task")],
+        [InlineKeyboardButton("📊 Task Status", callback_data="menu_status"), InlineKeyboardButton("📥 Export Excel", callback_data="menu_export")],
+        [InlineKeyboardButton("📋 System Logs", callback_data="menu_logs"), InlineKeyboardButton("⚙️ Settings", callback_data="menu_settings")]
     ]
+    return InlineKeyboardMarkup(keyboard)
 
-async def start_bot():
-    if not Config.BOT_TOKEN:
-        print("[!] ERROR: BOT_TOKEN is missing in .env file! Please set BOT_TOKEN.")
-        return
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    welcome_text = (
+        f"👋 **Welcome {user.first_name} to Telegram Member Adder Bot!**\n\n"
+        f"Power-packed Telegram group member scraper and auto-adder tool.\n"
+        f"Select an option from the menu below to get started:"
+    )
+    await update.message.reply_text(welcome_text, parse_mode='Markdown', reply_markup=get_main_keyboard())
+    return ConversationHandler.END
 
-    bot = TelegramClient('bot_session', Config.API_ID, Config.API_HASH)
-    await bot.start(bot_token=Config.BOT_TOKEN)
-    print("🤖 Telegram Member Adder Bot is online and listening!")
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
 
-    @bot.on(events.NewMessage(pattern='/start'))
-    async def start_handler(event):
-        sender = await event.get_sender()
-        welcome_text = (
-            f"👋 **Welcome {sender.first_name} to Telegram Member Adder Bot!**\n\n"
-            f"Power-packed Telegram group member scraper and auto-adder tool.\n"
-            f"Select an option from the menu below to get started:"
-        )
-        USER_STATES[event.chat_id] = {}
-        await event.respond(welcome_text, buttons=get_main_menu_buttons())
+    if data == "menu_main":
+        await query.edit_message_text("⚡ **Main Menu**\nSelect an option below:", parse_mode='Markdown', reply_markup=get_main_keyboard())
+        return ConversationHandler.END
 
-    @bot.on(events.CallbackQuery)
-    async def callback_handler(event):
-        chat_id = event.chat_id
-        data = event.data
-
-        if data == b"menu_main":
-            USER_STATES[chat_id] = {}
-            await event.edit("⚡ **Main Menu**\nSelect an option below:", buttons=get_main_menu_buttons())
-
-        elif data == b"menu_sessions":
-            with app.app_context():
-                sessions = UserSession.query.all()
-                text = "📱 **Registered Telegram Sessions**\n\n"
-                if not sessions:
-                    text += "No active Telegram sessions found."
-                else:
-                    for s in sessions:
-                        status = "✅ Active" if s.is_active else "❌ Inactive"
-                        text += f"• **{s.phone_number}** ({status}) - ID: {s.id}\n"
-
-                buttons = [
-                    [Button.inline("➕ Add Session (Phone OTP)", b"session_add_otp")],
-                    [Button.inline("🔑 Add String Session", b"session_add_string")],
-                    [Button.inline("🔙 Back to Menu", b"menu_main")]
-                ]
-                await event.edit(text, buttons=buttons)
-
-        elif data == b"session_add_otp":
-            USER_STATES[chat_id] = {'step': 'WAITING_PHONE'}
-            await event.edit(
-                "📱 **Add Telegram Session via Phone OTP**\n\n"
-                "Please send your Telegram phone number with country code (e.g. `+919876543210`):",
-                buttons=[[Button.inline("❌ Cancel", b"menu_main")]]
-            )
-
-        elif data == b"session_add_string":
-            USER_STATES[chat_id] = {'step': 'WAITING_STRING_PHONE'}
-            await event.edit(
-                "🔑 **Add Telethon String Session**\n\n"
-                "Please send phone number first (e.g. `+919876543210`):",
-                buttons=[[Button.inline("❌ Cancel", b"menu_main")]]
-            )
-
-        elif data == b"menu_new_task":
-            with app.app_context():
-                sessions = UserSession.query.filter_by(is_active=True).all()
-                if not sessions:
-                    await event.edit(
-                        "⚠️ **No active Telegram sessions!**\n"
-                        "Please add a Telegram session first before creating a task.",
-                        buttons=[[Button.inline("➕ Add Session", b"session_add_otp")], [Button.inline("🔙 Back", b"menu_main")]]
-                    )
-                    return
-                
-                buttons = []
+    elif data == "menu_sessions":
+        with app.app_context():
+            sessions = UserSession.query.all()
+            text = "📱 **Registered Telegram Sessions**\n\n"
+            if not sessions:
+                text += "No active Telegram sessions found."
+            else:
                 for s in sessions:
-                    buttons.append([Button.inline(f"📱 {s.phone_number}", f"select_sess_{s.id}".encode())])
-                buttons.append([Button.inline("❌ Cancel", b"menu_main")])
+                    status = "✅ Active" if s.is_active else "❌ Inactive"
+                    text += f"• **{s.phone_number}** ({status}) - ID: {s.id}\n"
 
-                await event.edit("🚀 **New Task: Step 1/4**\nSelect Telegram Session to use for scraping/adding:", buttons=buttons)
+            keyboard = [
+                [InlineKeyboardButton("➕ Add Session (Phone OTP)", callback_data="session_add_otp")],
+                [InlineKeyboardButton("🔑 Add String Session", callback_data="session_add_string")],
+                [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")]
+            ]
+            await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+            return ConversationHandler.END
 
-        elif data.startswith(b"select_sess_"):
-            sess_id = int(data.decode().split("_")[-1])
-            USER_STATES[chat_id] = {'step': 'WAITING_SOURCE_LINK', 'session_id': sess_id}
-            await event.edit(
-                "🚀 **New Task: Step 2/4**\n\n"
-                "Send the **Source Group/Channel Link or Username** (e.g., `@sourcegroup` or `https://t.me/sourcegroup`):",
-                buttons=[[Button.inline("❌ Cancel", b"menu_main")]]
-            )
+    elif data == "session_add_otp":
+        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="menu_main")]]
+        await query.edit_message_text(
+            "📱 **Add Telegram Session via Phone OTP**\n\n"
+            "Please send your Telegram phone number with country code (e.g. `+919876543210`):",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return WAITING_PHONE
 
-        elif data == b"menu_status":
-            with app.app_context():
-                tasks = ScrapingTask.query.order_by(ScrapingTask.created_at.desc()).limit(5).all()
-                if not tasks:
-                    await event.edit("📊 **Task Status**\n\nNo tasks found.", buttons=[[Button.inline("🔙 Back", b"menu_main")]])
-                    return
+    elif data == "session_add_string":
+        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="menu_main")]]
+        await query.edit_message_text(
+            "🔑 **Add Telethon String Session**\n\n"
+            "Please send phone number first (e.g. `+919876543210`):",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return WAITING_STRING_PHONE
 
-                text = "📊 **Recent Tasks Status**\n\n"
-                buttons = []
-                for t in tasks:
-                    text += (
-                        f"• **Task #{t.id}**: {t.name}\n"
-                        f"  Status: `{t.status}` | Progress: `{t.progress}%`\n"
-                        f"  Scraped: `{t.members_scraped}` | Added: `{t.members_added}` | Failed: `{t.members_failed}`\n\n"
-                    )
-                    if t.status in ['running', 'pending']:
-                        buttons.append([Button.inline(f"🛑 Cancel Task #{t.id}", f"cancel_task_{t.id}".encode())])
-                
-                buttons.append([Button.inline("🔄 Refresh", b"menu_status")])
-                buttons.append([Button.inline("🔙 Back to Menu", b"menu_main")])
-                await event.edit(text, buttons=buttons)
-
-        elif data.startswith(b"cancel_task_"):
-            task_id = int(data.decode().split("_")[-1])
-            with app.app_context():
-                t = ScrapingTask.query.get(task_id)
-                if t:
-                    t.status = 'cancelled'
-                    db.session.commit()
-            await event.answer("Task cancelled!", alert=True)
-            await event.edit("Task cancelled successfully.", buttons=[[Button.inline("🔙 Back", b"menu_status")]])
-
-        elif data == b"menu_export":
-            with app.app_context():
-                tasks = ScrapingTask.query.filter(ScrapingTask.members_scraped > 0).all()
-                if not tasks:
-                    await event.edit("📥 **Export Excel**\n\nNo completed task records found to export.", buttons=[[Button.inline("🔙 Back", b"menu_main")]])
-                    return
-
-                buttons = []
-                for t in tasks:
-                    buttons.append([Button.inline(f"📄 Task #{t.id} ({t.members_scraped} members)", f"do_export_{t.id}".encode())])
-                buttons.append([Button.inline("🔙 Back", b"menu_main")])
-                await event.edit("📥 **Select Task to Export Excel Report:**", buttons=buttons)
-
-        elif data.startswith(b"do_export_"):
-            task_id = int(data.decode().split("_")[-1])
-            with app.app_context():
-                t = ScrapingTask.query.get(task_id)
-                if t:
-                    report_data = [{
-                        'Task ID': t.id,
-                        'Task Name': t.name,
-                        'Source Link': t.source_group_link,
-                        'Target Link': t.target_group_link,
-                        'Scraped': t.members_scraped,
-                        'Added': t.members_added,
-                        'Failed': t.members_failed,
-                        'Status': t.status
-                    }]
-                    filename = f"task_{t.id}_report.xlsx"
-                    filepath = os.path.join(os.getcwd(), filename)
-                    ExcelExporter.export_members_to_excel(report_data, filepath)
-                    await bot.send_file(chat_id, filepath, caption=f"📊 **Excel Report for Task #{t.id}**")
-                    await event.answer("File sent!", alert=True)
-
-        elif data == b"menu_logs":
-            with app.app_context():
-                logs = SystemLog.query.order_by(SystemLog.created_at.desc()).limit(8).all()
-                text = "📋 **Recent System Logs**\n\n"
-                for l in logs:
-                    text += f"• `{l.created_at.strftime('%H:%M:%S')}` **[{l.log_type.upper()}]** {l.message}\n"
-                await event.edit(text, buttons=[[Button.inline("🔄 Refresh", b"menu_logs")], [Button.inline("🔙 Back", b"menu_main")]])
-
-        elif data == b"menu_settings":
-            with app.app_context():
-                st = {s.setting_key: s.setting_value for s in Settings.query.all()}
-                text = (
-                    "⚙️ **System Settings**\n\n"
-                    f"• **Default Delay**: `{st.get('default_delay', '3')}`s\n"
-                    f"• **Max Members**: `{st.get('max_members', '1000')}`\n"
-                    f"• **Safe Mode**: `{st.get('safe_mode', 'true')}`\n"
+    elif data == "menu_new_task":
+        with app.app_context():
+            sessions = UserSession.query.filter_by(is_active=True).all()
+            if not sessions:
+                keyboard = [[InlineKeyboardButton("➕ Add Session", callback_data="session_add_otp")], [InlineKeyboardButton("🔙 Back", callback_data="menu_main")]]
+                await query.edit_message_text(
+                    "⚠️ **No active Telegram sessions!**\n"
+                    "Please add a Telegram session first before creating a task.",
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
                 )
-                await event.edit(text, buttons=[[Button.inline("🔙 Back to Menu", b"menu_main")]])
+                return ConversationHandler.END
 
-    @bot.on(events.NewMessage)
-    async def message_handler(event):
-        if event.text.startswith('/'):
-            return
-        
-        chat_id = event.chat_id
-        state = USER_STATES.get(chat_id, {})
-        step = state.get('step')
-        text = event.text.strip()
+            keyboard = []
+            for s in sessions:
+                keyboard.append([InlineKeyboardButton(f"📱 {s.phone_number}", callback_data=f"select_sess_{s.id}")])
+            keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="menu_main")])
 
-        if step == 'WAITING_PHONE':
-            USER_STATES[chat_id]['phone'] = text
-            await event.respond("⏳ Sending Telegram verification code...")
-            try:
-                tg = TelegramAPI()
-                res = await tg.send_code_request(text)
-                USER_STATES[chat_id]['phone_code_hash'] = res['phone_code_hash']
-                USER_STATES[chat_id]['temp_session'] = res['session_string']
-                USER_STATES[chat_id]['step'] = 'WAITING_OTP'
-                await event.respond("📩 **OTP Sent!** Please enter the verification code received on Telegram:")
-            except Exception as e:
-                await event.respond(f"❌ Error sending code: {e}", buttons=[[Button.inline("🔙 Main Menu", b"menu_main")]])
+            await query.edit_message_text("🚀 **New Task: Step 1/4**\nSelect Telegram Session to use for scraping/adding:", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+            return ConversationHandler.END
 
-        elif step == 'WAITING_OTP':
-            phone = USER_STATES[chat_id]['phone']
-            pch = USER_STATES[chat_id]['phone_code_hash']
-            ts = USER_STATES[chat_id]['temp_session']
-            await event.respond("⏳ Verifying OTP...")
-            try:
-                tg = TelegramAPI()
-                res = await tg.sign_in_with_code(phone, pch, text, ts)
-                if res.get('status') == 'success':
-                    with app.app_context():
-                        sess = UserSession(phone_number=phone, session_string=res['session_string'], is_active=True)
-                        db.session.add(sess)
-                        db.session.commit()
-                    USER_STATES[chat_id] = {}
-                    await event.respond("✅ **Session added successfully!**", buttons=get_main_menu_buttons())
-                elif res.get('status') == 'password_needed':
-                    USER_STATES[chat_id]['step'] = 'WAITING_2FA'
-                    await event.respond("🔒 **2FA Password Required!** Please enter your Telegram 2FA password:")
-            except Exception as e:
-                await event.respond(f"❌ Verification failed: {e}", buttons=[[Button.inline("🔙 Main Menu", b"menu_main")]])
+    elif data.startswith("select_sess_"):
+        sess_id = int(data.split("_")[-1])
+        context.user_data['session_id'] = sess_id
+        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="menu_main")]]
+        await query.edit_message_text(
+            "🚀 **New Task: Step 2/4**\n\n"
+            "Send the **Source Group/Channel Link or Username** (e.g., `@sourcegroup` or `https://t.me/sourcegroup`):",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return WAITING_SOURCE_LINK
 
-        elif step == 'WAITING_STRING_PHONE':
-            USER_STATES[chat_id]['phone'] = text
-            USER_STATES[chat_id]['step'] = 'WAITING_STRING'
-            await event.respond("🔑 Now send the Telethon **Session String**:")
+    elif data == "menu_status":
+        with app.app_context():
+            tasks = ScrapingTask.query.order_by(ScrapingTask.created_at.desc()).limit(5).all()
+            if not tasks:
+                await query.edit_message_text("📊 **Task Status**\n\nNo tasks found.", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu_main")]]))
+                return ConversationHandler.END
 
-        elif step == 'WAITING_STRING':
-            phone = USER_STATES[chat_id]['phone']
+            text = "📊 **Recent Tasks Status**\n\n"
+            keyboard = []
+            for t in tasks:
+                text += (
+                    f"• **Task #{t.id}**: {t.name}\n"
+                    f"  Status: `{t.status}` | Progress: `{t.progress}%`\n"
+                    f"  Scraped: `{t.members_scraped}` | Added: `{t.members_added}` | Failed: `{t.members_failed}`\n\n"
+                )
+                if t.status in ['running', 'pending']:
+                    keyboard.append([InlineKeyboardButton(f"🛑 Cancel Task #{t.id}", callback_data=f"cancel_task_{t.id}")])
+            
+            keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data="menu_status")])
+            keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")])
+            await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+            return ConversationHandler.END
+
+    elif data.startswith("cancel_task_"):
+        task_id = int(data.split("_")[-1])
+        with app.app_context():
+            t = ScrapingTask.query.get(task_id)
+            if t:
+                t.status = 'cancelled'
+                db.session.commit()
+        await query.answer("Task cancelled!")
+        await query.edit_message_text("Task cancelled successfully.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu_status")]]))
+        return ConversationHandler.END
+
+    elif data == "menu_export":
+        with app.app_context():
+            tasks = ScrapingTask.query.filter(ScrapingTask.members_scraped > 0).all()
+            if not tasks:
+                await query.edit_message_text("📥 **Export Excel**\n\nNo completed task records found to export.", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu_main")]]))
+                return ConversationHandler.END
+
+            keyboard = []
+            for t in tasks:
+                keyboard.append([InlineKeyboardButton(f"📄 Task #{t.id} ({t.members_scraped} members)", callback_data=f"do_export_{t.id}")])
+            keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="menu_main")])
+            await query.edit_message_text("📥 **Select Task to Export Excel Report:**", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+            return ConversationHandler.END
+
+    elif data.startswith("do_export_"):
+        task_id = int(data.split("_")[-1])
+        with app.app_context():
+            t = ScrapingTask.query.get(task_id)
+            if t:
+                report_data = [{
+                    'Task ID': t.id,
+                    'Task Name': t.name,
+                    'Source Link': t.source_group_link,
+                    'Target Link': t.target_group_link,
+                    'Scraped': t.members_scraped,
+                    'Added': t.members_added,
+                    'Failed': t.members_failed,
+                    'Status': t.status
+                }]
+                filename = f"task_{t.id}_report.xlsx"
+                filepath = os.path.join(os.getcwd(), filename)
+                ExcelExporter.export_members_to_excel(report_data, filepath)
+                with open(filepath, 'rb') as doc:
+                    await context.bot.send_document(chat_id=update.effective_chat.id, document=doc, caption=f"📊 **Excel Report for Task #{t.id}**", parse_mode='Markdown')
+                await query.answer("File sent!")
+        return ConversationHandler.END
+
+    elif data == "menu_logs":
+        with app.app_context():
+            logs = SystemLog.query.order_by(SystemLog.created_at.desc()).limit(8).all()
+            text = "📋 **Recent System Logs**\n\n"
+            for l in logs:
+                text += f"• `{l.created_at.strftime('%H:%M:%S')}` **[{l.log_type.upper()}]** {l.message}\n"
+            keyboard = [[InlineKeyboardButton("🔄 Refresh", callback_data="menu_logs")], [InlineKeyboardButton("🔙 Back", callback_data="menu_main")]]
+            await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+            return ConversationHandler.END
+
+    elif data == "menu_settings":
+        with app.app_context():
+            st = {s.setting_key: s.setting_value for s in Settings.query.all()}
+            text = (
+                "⚙️ **System Settings**\n\n"
+                f"• **Default Delay**: `{st.get('default_delay', '3')}`s\n"
+                f"• **Max Members**: `{st.get('max_members', '1000')}`\n"
+                f"• **Safe Mode**: `{st.get('safe_mode', 'true')}`\n"
+            )
+            keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")]]
+            await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+            return ConversationHandler.END
+
+# OTP Handlers
+async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    phone = update.message.text.strip()
+    context.user_data['phone'] = phone
+    await update.message.reply_text("⏳ Sending Telegram verification code...")
+    try:
+        tg = TelegramAPI()
+        res = await tg.send_code_request(phone)
+        context.user_data['phone_code_hash'] = res['phone_code_hash']
+        context.user_data['temp_session'] = res['session_string']
+        await update.message.reply_text("📩 **OTP Sent!** Please enter the verification code received on Telegram:", parse_mode='Markdown')
+        return WAITING_OTP
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error sending code: {e}", reply_markup=get_main_keyboard())
+        return ConversationHandler.END
+
+async def handle_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    otp = update.message.text.strip()
+    phone = context.user_data['phone']
+    pch = context.user_data['phone_code_hash']
+    ts = context.user_data['temp_session']
+    await update.message.reply_text("⏳ Verifying OTP...")
+    try:
+        tg = TelegramAPI()
+        res = await tg.sign_in_with_code(phone, pch, otp, ts)
+        if res.get('status') == 'success':
             with app.app_context():
-                sess = UserSession(phone_number=phone, session_string=text, is_active=True)
+                sess = UserSession(phone_number=phone, session_string=res['session_string'], is_active=True)
                 db.session.add(sess)
                 db.session.commit()
-            USER_STATES[chat_id] = {}
-            await event.respond("✅ **String session saved!**", buttons=get_main_menu_buttons())
+            await update.message.reply_text("✅ **Session added successfully!**", parse_mode='Markdown', reply_markup=get_main_keyboard())
+        return ConversationHandler.END
+    except Exception as e:
+        await update.message.reply_text(f"❌ Verification failed: {e}", reply_markup=get_main_keyboard())
+        return ConversationHandler.END
 
-        elif step == 'WAITING_SOURCE_LINK':
-            USER_STATES[chat_id]['source_link'] = text
-            USER_STATES[chat_id]['step'] = 'WAITING_TARGET_LINK'
-            await event.respond("🚀 **New Task: Step 3/4**\nSend the **Target Group/Channel Link or Username**:")
+# String Session Handlers
+async def handle_string_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['phone'] = update.message.text.strip()
+    await update.message.reply_text("🔑 Now send the Telethon **Session String**:", parse_mode='Markdown')
+    return WAITING_STRING
 
-        elif step == 'WAITING_TARGET_LINK':
-            USER_STATES[chat_id]['target_link'] = text
-            USER_STATES[chat_id]['step'] = 'WAITING_MAX_MEMBERS'
-            await event.respond("🚀 **New Task: Step 4/4**\nSend **Max Members to Scrape** (e.g., `500`):")
+async def handle_string_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    session_str = update.message.text.strip()
+    phone = context.user_data['phone']
+    with app.app_context():
+        sess = UserSession(phone_number=phone, session_string=session_str, is_active=True)
+        db.session.add(sess)
+        db.session.commit()
+    await update.message.reply_text("✅ **String session saved!**", parse_mode='Markdown', reply_markup=get_main_keyboard())
+    return ConversationHandler.END
 
-        elif step == 'WAITING_MAX_MEMBERS':
-            try:
-                max_m = int(text)
-            except ValueError:
-                max_m = 500
+# Task Creation Handlers
+async def handle_source_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['source_link'] = update.message.text.strip()
+    keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="menu_main")]]
+    await update.message.reply_text("🚀 **New Task: Step 3/4**\nSend the **Target Group/Channel Link or Username**:", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+    return WAITING_TARGET_LINK
 
-            session_id = USER_STATES[chat_id]['session_id']
-            source = USER_STATES[chat_id]['source_link']
-            target = USER_STATES[chat_id]['target_link']
+async def handle_target_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['target_link'] = update.message.text.strip()
+    keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="menu_main")]]
+    await update.message.reply_text("🚀 **New Task: Step 4/4**\nSend **Max Members to Scrape** (e.g., `500`):", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+    return WAITING_MAX_MEMBERS
 
-            with app.app_context():
-                task = ScrapingTask(
-                    name=f"Task {source[:10]} -> {target[:10]}",
-                    source_group_link=source,
-                    target_group_link=target,
-                    user_session_id=session_id,
-                    max_members=max_m,
-                    delay_between_adds=3,
-                    status='pending'
-                )
-                db.session.add(task)
-                db.session.commit()
-                task_id = task.id
+async def handle_max_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        max_m = int(update.message.text.strip())
+    except ValueError:
+        max_m = 500
 
-            USER_STATES[chat_id] = {}
-            await event.respond(
-                f"🚀 **Task #{task_id} Created & Started!**\n"
-                f"• Source: `{source}`\n"
-                f"• Target: `{target}`\n"
-                f"• Max Members: `{max_m}`\n\n"
-                f"Use **Task Status** button to monitor live progress.",
-                buttons=get_main_menu_buttons()
-            )
+    session_id = context.user_data['session_id']
+    source = context.user_data['source_link']
+    target = context.user_data['target_link']
 
-            # Start background processing
-            asyncio.create_task(run_background_task(task_id))
+    with app.app_context():
+        task = ScrapingTask(
+            name=f"Task {source[:10]} -> {target[:10]}",
+            source_group_link=source,
+            target_group_link=target,
+            user_session_id=session_id,
+            max_members=max_m,
+            delay_between_adds=3,
+            status='pending'
+        )
+        db.session.add(task)
+        db.session.commit()
+        task_id = task.id
 
-    await bot.run_until_disconnected()
+    await update.message.reply_text(
+        f"🚀 **Task #{task_id} Created & Started!**\n"
+        f"• Source: `{source}`\n"
+        f"• Target: `{target}`\n"
+        f"• Max Members: `{max_m}`\n\n"
+        f"Use **Task Status** button to monitor live progress.",
+        parse_mode='Markdown',
+        reply_markup=get_main_keyboard()
+    )
+
+    # Launch task processing asynchronously
+    asyncio.create_task(run_background_task(task_id))
+    return ConversationHandler.END
 
 async def run_background_task(task_id):
     await asyncio.to_thread(TaskManager.process_task, task_id)
 
+def main():
+    if not Config.BOT_TOKEN:
+        print("[!] ERROR: BOT_TOKEN missing in .env!")
+        return
+
+    print("🚀 Starting Telegram Bot (HTTP Long Polling with 30s timeouts)...")
+    req = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0, write_timeout=30.0)
+    application = ApplicationBuilder().token(Config.BOT_TOKEN).request(req).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler('start', start),
+            CallbackQueryHandler(menu_callback),
+        ],
+        states={
+            WAITING_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_phone)],
+            WAITING_OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_otp)],
+            WAITING_STRING_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_string_phone)],
+            WAITING_STRING: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_string_session)],
+            WAITING_SOURCE_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_source_link)],
+            WAITING_TARGET_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_target_link)],
+            WAITING_MAX_MEMBERS: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_max_members)],
+        },
+        fallbacks=[CommandHandler('start', start), CallbackQueryHandler(menu_callback)],
+        per_message=False,
+    )
+
+    application.add_handler(conv_handler)
+    print("🤖 Telegram Member Adder Bot is online and listening!")
+    application.run_polling()
+
 if __name__ == '__main__':
-    asyncio.run(start_bot())
+    main()
