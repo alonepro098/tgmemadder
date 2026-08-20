@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - TG Member Adder{% endblock %}
+
+{% block content %}
+<div class="header">
+    <div>
+        <h1 class="page-title">Application Settings</h1>
+        <p style="color: var(--text-muted); font-size: 0.9rem;">Configure global scraping, delays, and safety parameters</p>
+    </div>
+</div>
+
+<div class="glass-card" style="max-width: 700px;">
+    <form method="POST" action="{{ url_for('admin.settings') }}">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem;">
+            <div class="form-group">
+                <label class="form-label">Default Delay (seconds)</label>
+                <input type="number" name="default_delay" class="form-control" value="{{ settings.get('default_delay', '3') }}" required>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">Max Members per Task</label>
+                <input type="number" name="max_members" class="form-control" value="{{ settings.get('max_members', '1000') }}" required>
+            </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem;">
+            <div class="form-group">
+                <label class="form-label">Max Retries on Failure</label>
+                <input type="number" name="max_retries" class="form-control" value="{{ settings.get('max_retries', '3') }}" required>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Safe Mode</label>
+                <select name="safe_mode" class="form-control">
+                    <option value="true" {% if settings.get('safe_mode') == 'true' %}selected{% endif %}>Enabled (Recommended)</option>
+                    <option value="false" {% if settings.get('safe_mode') == 'false' %}selected{% endif %}>Disabled</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Log Level</label>
+            <select name="log_level" class="form-control">
+                <option value="info" {% if settings.get('log_level') == 'info' %}selected{% endif %}>Info</option>
+                <option value="debug" {% if settings.get('log_level') == 'debug' %}selected{% endif %}>Debug</option>
+                <option value="warning" {% if settings.get('log_level') == 'warning' %}selected{% endif %}>Warning</option>
+            </select>
+        </div>
+
+        <div style="margin-top: 2rem;">
+            <button type="submit" class="btn btn-primary">Save Settings 💾</button>
+        </div>
+    </form>
+</div>
+{% endblock %}
