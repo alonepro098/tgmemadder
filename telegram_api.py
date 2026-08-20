@@ -36,7 +36,7 @@ class TelegramAPI:
             raise e
 
     async def sign_in_with_code(self, phone_number, phone_code_hash, code, temp_session_string):
-        """Complete sign in using verification code"""
+        """Complete sign in using verification code or return 2FA needed state"""
         client = self.create_client(temp_session_string)
         await client.connect()
         try:
@@ -51,8 +51,32 @@ class TelegramAPI:
                 'first_name': user.first_name
             }
         except errors.SessionPasswordNeededError:
+            current_session = client.session.save()
             await client.disconnect()
-            return {'status': 'password_needed', 'message': '2FA Password Required'}
+            return {
+                'status': 'password_needed',
+                'message': '2FA Password Required',
+                'session_string': current_session
+            }
+        except Exception as e:
+            await client.disconnect()
+            raise e
+
+    async def sign_in_with_password(self, password, temp_session_string):
+        """Sign in with 2FA password"""
+        client = self.create_client(temp_session_string)
+        await client.connect()
+        try:
+            user = await client.sign_in(password=password)
+            final_session = client.session.save()
+            await client.disconnect()
+            return {
+                'status': 'success',
+                'session_string': final_session,
+                'user_id': user.id,
+                'username': user.username,
+                'first_name': user.first_name
+            }
         except Exception as e:
             await client.disconnect()
             raise e
@@ -98,14 +122,12 @@ class TelegramAPI:
         filtered_out = 0
         
         try:
-            # Fetch members
             all_participants = await client.get_participants(target_entity, limit=limit)
             
             for user in all_participants:
                 if not isinstance(user, User):
                     continue
                 
-                # Exclude bots and deleted accounts
                 if user.bot or user.deleted:
                     filtered_out += 1
                     continue
@@ -115,12 +137,10 @@ class TelegramAPI:
                 last_name = user.last_name or ''
                 full_text = f"{username} {first_name} {last_name}".lower()
                 
-                # Apply filter keywords
                 if filter_keywords and not any(k in full_text for k in filter_keywords):
                     filtered_out += 1
                     continue
                 
-                # Apply exclude keywords
                 if exclude_keywords and any(k in full_text for k in exclude_keywords):
                     filtered_out += 1
                     continue
@@ -157,7 +177,6 @@ class TelegramAPI:
                 try:
                     user_to_add = await client.get_input_entity(member['id'])
                     
-                    # Add member depending on entity type
                     if isinstance(target_input, InputPeerChannel):
                         await client(functions.channels.InviteToChannelRequest(
                             channel=target_input,
@@ -176,7 +195,6 @@ class TelegramAPI:
                 except errors.UserPrivacyRestrictedError:
                     failed_count += 1
                     failed_members.append({'member': member, 'reason': 'Privacy settings restricted'})
-                    logger.warning(f"User {member.get('id')} has privacy restrictions.")
                 except errors.UserChannelsTooMuchError:
                     failed_count += 1
                     failed_members.append({'member': member, 'reason': 'User in too many channels'})
@@ -187,7 +205,7 @@ class TelegramAPI:
                     logger.warning(f"Flood wait required for {e.seconds} seconds.")
                     failed_count += 1
                     failed_members.append({'member': member, 'reason': f'FloodWait {e.seconds}s'})
-                    await asyncio.sleep(min(e.seconds, 60))  # sleep max 60 seconds or break
+                    await asyncio.sleep(min(e.seconds, 60))
                     break
                 except Exception as e:
                     failed_count += 1
@@ -197,7 +215,6 @@ class TelegramAPI:
                 if progress_callback:
                     await progress_callback(index + 1, len(members_list), added_count, failed_count)
                 
-                # Delay between additions
                 await asyncio.sleep(delay)
                 
             await client.disconnect()
