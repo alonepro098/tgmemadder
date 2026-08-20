@@ -53,13 +53,17 @@ def get_main_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
     user = update.effective_user
     welcome_text = (
         f"👋 **Welcome {user.first_name} to Telegram Member Adder Bot!**\n\n"
         f"Power-packed Telegram group member scraper and auto-adder tool.\n"
         f"Select an option from the menu below to get started:"
     )
-    await update.message.reply_text(welcome_text, parse_mode='Markdown', reply_markup=get_main_keyboard())
+    if update.message:
+        await update.message.reply_text(welcome_text, parse_mode='Markdown', reply_markup=get_main_keyboard())
+    elif update.callback_query:
+        await update.callback_query.edit_message_text(welcome_text, parse_mode='Markdown', reply_markup=get_main_keyboard())
     return ConversationHandler.END
 
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -68,6 +72,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == "menu_main":
+        context.user_data.clear()
         await query.edit_message_text("⚡ **Main Menu**\nSelect an option below:", parse_mode='Markdown', reply_markup=get_main_keyboard())
         return ConversationHandler.END
 
@@ -348,7 +353,7 @@ def main():
         print("[!] ERROR: BOT_TOKEN missing in .env!")
         return
 
-    print("🚀 Starting Telegram Bot (HTTP Long Polling with 30s timeouts)...")
+    print("🚀 Starting Telegram Bot (Single Clean Instance)...")
     req = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0, write_timeout=30.0)
     application = ApplicationBuilder().token(Config.BOT_TOKEN).request(req).build()
 
@@ -366,13 +371,13 @@ def main():
             WAITING_TARGET_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_target_link)],
             WAITING_MAX_MEMBERS: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_max_members)],
         },
-        fallbacks=[CommandHandler('start', start), CallbackQueryHandler(menu_callback)],
+        fallbacks=[CallbackQueryHandler(menu_callback)],
         per_message=False,
     )
 
     application.add_handler(conv_handler)
     print("🤖 Telegram Member Adder Bot is online and listening!")
-    application.run_polling()
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
