@@ -57,7 +57,6 @@ def escape_markdown(text):
     """Safely sanitize text for Markdown parsing"""
     if not text:
         return ""
-    # Characters that need escaping in Telegram Markdown v1
     for char in ['_', '*', '`', '[']:
         text = text.replace(char, f'\\{char}')
     return text
@@ -94,23 +93,40 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with app.app_context():
             sessions = UserSession.query.all()
             text = "📱 **Registered Telegram Sessions**\n\n"
+            keyboard = []
             if not sessions:
                 text += "No active Telegram sessions found."
             else:
                 for s in sessions:
                     status = "✅ Active" if s.is_active else "❌ Inactive"
-                    text += f"• **{s.phone_number}** ({status}) - ID: {s.id}\n"
+                    text += f"• **{s.phone_number}** ({status}) - ID: `{s.id}`\n"
+                    keyboard.append([InlineKeyboardButton(f"🗑 Remove Session {s.phone_number}", callback_data=f"delete_session_{s.id}")])
 
-            keyboard = [
-                [InlineKeyboardButton("➕ Add Session (Phone OTP)", callback_data="session_add_otp")],
-                [InlineKeyboardButton("🔑 Add String Session", callback_data="session_add_string")],
-                [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")]
-            ]
+            keyboard.append([InlineKeyboardButton("➕ Add Session (Phone OTP)", callback_data="session_add_otp")])
+            keyboard.append([InlineKeyboardButton("🔑 Add String Session", callback_data="session_add_string")])
+            keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")])
             try:
                 await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
             except Exception:
                 pass
             return ConversationHandler.END
+
+    elif data.startswith("delete_session_"):
+        sess_id = int(data.split("_")[-1])
+        with app.app_context():
+            # Delete related tasks first to preserve DB foreign key constraints
+            ScrapingTask.query.filter_by(user_session_id=sess_id).delete()
+            sess = UserSession.query.get(sess_id)
+            if sess:
+                phone_num = sess.phone_number
+                db.session.delete(sess)
+                db.session.commit()
+                await query.answer(f"Session {phone_num} removed!")
+            else:
+                await query.answer("Session not found!")
+        
+        # Refresh sessions view
+        return await menu_callback(update, context)
 
     elif data == "session_add_otp":
         keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="menu_main")]]
@@ -301,8 +317,13 @@ async def handle_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if res.get('status') == 'success':
             with app.app_context():
-                sess = UserSession(phone_number=phone, session_string=res['session_string'], is_active=True)
-                db.session.add(sess)
+                sess = UserSession.query.filter_by(phone_number=phone).first()
+                if not sess:
+                    sess = UserSession(phone_number=phone, session_string=res['session_string'], is_active=True)
+                    db.session.add(sess)
+                else:
+                    sess.session_string = res['session_string']
+                    sess.is_active = True
                 db.session.commit()
             await update.message.reply_text("✅ **Session added successfully!**", parse_mode='Markdown', reply_markup=get_main_keyboard())
             return ConversationHandler.END
@@ -332,8 +353,13 @@ async def handle_2fa_password(update: Update, context: ContextTypes.DEFAULT_TYPE
         res = await tg.sign_in_with_password(password, ts)
         if res.get('status') == 'success':
             with app.app_context():
-                sess = UserSession(phone_number=phone, session_string=res['session_string'], is_active=True)
-                db.session.add(sess)
+                sess = UserSession.query.filter_by(phone_number=phone).first()
+                if not sess:
+                    sess = UserSession(phone_number=phone, session_string=res['session_string'], is_active=True)
+                    db.session.add(sess)
+                else:
+                    sess.session_string = res['session_string']
+                    sess.is_active = True
                 db.session.commit()
             await update.message.reply_text("✅ **Session added successfully with 2FA!**", parse_mode='Markdown', reply_markup=get_main_keyboard())
         return ConversationHandler.END
@@ -351,8 +377,13 @@ async def handle_string_session(update: Update, context: ContextTypes.DEFAULT_TY
     session_str = update.message.text.strip()
     phone = context.user_data['phone']
     with app.app_context():
-        sess = UserSession(phone_number=phone, session_string=session_str, is_active=True)
-        db.session.add(sess)
+        sess = UserSession.query.filter_by(phone_number=phone).first()
+        if not sess:
+            sess = UserSession(phone_number=phone, session_string=session_str, is_active=True)
+            db.session.add(sess)
+        else:
+            sess.session_string = session_str
+            sess.is_active = True
         db.session.commit()
     await update.message.reply_text("✅ **String session saved!**", parse_mode='Markdown', reply_markup=get_main_keyboard())
     return ConversationHandler.END
