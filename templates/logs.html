@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block title %}System Logs - TG Member Adder{% endblock %}
+
+{% block content %}
+<div class="header">
+    <div>
+        <h1 class="page-title">System Logs</h1>
+        <p style="color: var(--text-muted); font-size: 0.9rem;">System events, operation logs, and error tracebacks</p>
+    </div>
+</div>
+
+<div class="glass-card">
+    <div class="table-responsive">
+        <table class="custom-table">
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Type</th>
+                    <th>Task ID</th>
+                    <th>Message</th>
+                    <th>Details</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for log in logs %}
+                <tr>
+                    <td style="font-size: 0.85rem; color: var(--text-muted);">{{ log.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                    <td>
+                        <span class="badge badge-{% if log.log_type == 'error' %}danger{% elif log.log_type == 'success' %}success{% elif log.log_type == 'warning' %}warning{% else %}info{% endif %}">
+                            {{ log.log_type }}
+                        </span>
+                    </td>
+                    <td>{% if log.task_id %}#{{ log.task_id }}{% else %}-{% endif %}</td>
+                    <td><strong>{{ log.message }}</strong></td>
+                    <td style="font-size: 0.85rem; color: var(--text-muted); max-width: 300px; overflow: hidden; text-overflow: ellipsis;">
+                        {{ log.details or '-' }}
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 2rem;">No logs recorded yet.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
