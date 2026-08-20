@@ -162,7 +162,7 @@ class TelegramAPI:
             raise e
 
     async def add_members_with_delay(self, session_string, target_group_entity, members_list, delay=3, progress_callback=None):
-        """Add members to target group with delay and real-time progress callbacks"""
+        """Add members to target group with accurate verification and error handling"""
         client = self.create_client(session_string)
         await client.connect()
         
@@ -182,30 +182,48 @@ class TelegramAPI:
                         user_to_add = await client.get_input_entity(member['id'])
                     
                     if isinstance(target_input, InputPeerChannel):
-                        await client(functions.channels.InviteToChannelRequest(
+                        res = await client(functions.channels.InviteToChannelRequest(
                             channel=target_input,
                             users=[user_to_add]
                         ))
+                        # Verify if Telegram actually added the user
+                        actual_users = getattr(res, 'users', [])
+                        if actual_users and len(actual_users) > 0:
+                            added_count += 1
+                            logger.info(f"[{index+1}/{len(members_list)}] Truly added member {member.get('username') or member.get('id')}")
+                        else:
+                            failed_count += 1
+                            failed_members.append({'member': member, 'reason': 'Silently restricted by Telegram privacy'})
+                            logger.warning(f"[{index+1}/{len(members_list)}] Telegram skipped adding {member.get('id')}")
                     else:
                         await client(functions.messages.AddChatUserRequest(
                             chat_id=target_group_entity.id,
                             user_id=user_to_add,
                             fwd_limit=100
                         ))
-                    
-                    added_count += 1
-                    logger.info(f"[{index+1}/{len(members_list)}] Successfully added member {member.get('username') or member.get('id')}")
+                        added_count += 1
+                        logger.info(f"[{index+1}/{len(members_list)}] Added chat user {member.get('username') or member.get('id')}")
                     
                 except errors.UserPrivacyRestrictedError:
                     failed_count += 1
                     failed_members.append({'member': member, 'reason': 'Privacy settings restricted'})
                     logger.warning(f"Privacy restricted for member {member.get('id')}")
+                except errors.UserNotMutualContactError:
+                    failed_count += 1
+                    failed_members.append({'member': member, 'reason': 'Requires mutual contact'})
                 except errors.UserChannelsTooMuchError:
                     failed_count += 1
                     failed_members.append({'member': member, 'reason': 'User in too many channels'})
                 except errors.UserAlreadyParticipantError:
                     failed_count += 1
                     failed_members.append({'member': member, 'reason': 'Already in target group'})
+                except errors.PeerFloodError:
+                    failed_count += 1
+                    failed_members.append({'member': member, 'reason': 'Account hit daily adding limit (PeerFloodError)'})
+                    logger.warning(f"PeerFloodError! Session account hit Telegram daily adding limit.")
+                    if progress_callback:
+                        await progress_callback(index + 1, len(members_list), added_count, failed_count)
+                    break
                 except errors.FloodWaitError as e:
                     logger.warning(f"Flood wait required for {e.seconds} seconds.")
                     failed_count += 1
