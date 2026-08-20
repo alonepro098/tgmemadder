@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+
+{% block title %}Tasks - TG Member Adder{% endblock %}
+
+{% block content %}
+<div class="header">
+    <div>
+        <h1 class="page-title">Scrape & Add Tasks</h1>
+        <p style="color: var(--text-muted); font-size: 0.9rem;">Manage scraping and member-adding operations</p>
+    </div>
+    <div>
+        <button class="btn btn-primary" onclick="openModal('createTaskModal')">
+            + Create New Task
+        </button>
+    </div>
+</div>
+
+<div class="glass-card">
+    <div class="table-responsive">
+        <table class="custom-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Task Name</th>
+                    <th>Source Group</th>
+                    <th>Target Group</th>
+                    <th>Progress</th>
+                    <th>Scraped / Added / Failed</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for task in tasks %}
+                <tr>
+                    <td>#{{ task.id }}</td>
+                    <td><strong>{{ task.name }}</strong></td>
+                    <td style="font-size: 0.85rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                        <a href="{{ task.source_group_link }}" target="_blank" style="color: var(--primary-color);">{{ task.source_group_link }}</a>
+                    </td>
+                    <td style="font-size: 0.85rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                        <a href="{{ task.target_group_link }}" target="_blank" style="color: var(--accent-color);">{{ task.target_group_link }}</a>
+                    </td>
+                    <td style="width: 140px;">
+                        <div class="task-progress" data-task-id="{% if task.status == 'running' or task.status == 'pending' %}{{ task.id }}{% endif %}">
+                            <div style="font-size: 0.75rem; margin-bottom: 0.25rem; font-weight: 600;">{{ task.progress }}%</div>
+                            <div class="progress-bar-bg">
+                                <div class="progress-bar-fill" style="width: {{ task.progress }}%;"></div>
+                            </div>
+                        </div>
+                    </td>
+                    <td>
+                        <span style="color: var(--primary-color);">{{ task.members_scraped }}</span> / 
+                        <span style="color: var(--accent-color);">{{ task.members_added }}</span> / 
+                        <span style="color: var(--danger-color);">{{ task.members_failed }}</span>
+                    </td>
+                    <td>
+                        <span id="task-status-{{ task.id }}" class="badge badge-{% if task.status == 'completed' %}success{% elif task.status == 'failed' %}danger{% else %}info{% endif %}">
+                            {{ task.status }}
+                        </span>
+                    </td>
+                    <td>
+                        <a href="{{ url_for('admin.export_task', task_id=task.id) }}" class="btn btn-outline" style="padding: 0.3rem 0.6rem; font-size: 0.75rem;">
+                            📥 Export Excel
+                        </a>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 2rem;">
+                        No tasks created yet. Click "+ Create New Task" to start scraping!
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Create Task Modal -->
+<div id="createTaskModal" class="modal-overlay">
+    <div class="modal-content glass-card">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+            <h3 style="font-size: 1.25rem; font-weight: 700;">Create Scrape & Add Task</h3>
+            <button class="btn btn-outline" onclick="closeModal('createTaskModal')" style="padding: 0.25rem 0.5rem;">✕</button>
+        </div>
+        
+        <form onsubmit="submitTask(event)">
+            <div class="form-group">
+                <label class="form-label">Task Name</label>
+                <input type="text" name="name" class="form-control" placeholder="Crypto Members Transfer" required>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">Select Active Telegram Session</label>
+                <select name="user_session_id" class="form-control" required>
+                    {% for session in sessions %}
+                    <option value="{{ session.id }}">{{ session.phone_number }} (Active)</option>
+                    {% else %}
+                    <option value="">No active sessions! Please add a session first.</option>
+                    {% endfor %}
+                </select>
+            </div>
+            
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <div class="form-group">
+                    <label class="form-label">Source Group (Link / Username)</label>
+                    <input type="text" name="source_group_link" class="form-control" placeholder="https://t.me/sourcegroup" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Target Group (Link / Username)</label>
+                    <input type="text" name="target_group_link" class="form-control" placeholder="https://t.me/targetgroup" required>
+                </div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <div class="form-group">
+                    <label class="form-label">Max Members to Scrape</label>
+                    <input type="number" name="max_members" class="form-control" value="500" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Delay Between Adds (seconds)</label>
+                    <input type="number" name="delay_between_adds" class="form-control" value="3" required>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Filter Keywords (comma separated, optional)</label>
+                <input type="text" name="filter_keywords" class="form-control" placeholder="crypto, admin, dev">
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Exclude Keywords (comma separated, optional)</label>
+                <input type="text" name="exclude_keywords" class="form-control" placeholder="bot, spam">
+            </div>
+
+            <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1.5rem;">
+                <button type="button" class="btn btn-outline" onclick="closeModal('createTaskModal')">Cancel</button>
+                <button type="submit" class="btn btn-primary">Start Task 🚀</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
