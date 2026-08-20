@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - TG Member Adder{% endblock %}
+
+{% block content %}
+<div class="header">
+    <div>
+        <h1 class="page-title">Dashboard Overview</h1>
+        <p style="color: var(--text-muted); font-size: 0.9rem;">Real-time metrics & system stats</p>
+    </div>
+    <div>
+        <a href="{{ url_for('admin.tasks') }}" class="btn btn-primary">
+            + New Scrape & Add Task
+        </a>
+    </div>
+</div>
+
+<!-- Stats Cards -->
+<div class="stats-grid">
+    <div class="glass-card stat-card">
+        <div>
+            <div class="stat-label">Active Sessions</div>
+            <div class="stat-val" style="color: var(--accent-color);">{{ active_sessions }} / {{ total_sessions }}</div>
+        </div>
+        <div class="stat-icon">📱</div>
+    </div>
+    
+    <div class="glass-card stat-card">
+        <div>
+            <div class="stat-label">Members Scraped</div>
+            <div class="stat-val" style="color: var(--primary-color);">{{ total_scraped }}</div>
+        </div>
+        <div class="stat-icon">📥</div>
+    </div>
+    
+    <div class="glass-card stat-card">
+        <div>
+            <div class="stat-label">Members Added</div>
+            <div class="stat-val" style="color: #8b5cf6;">{{ total_added }}</div>
+        </div>
+        <div class="stat-icon">👥</div>
+    </div>
+    
+    <div class="glass-card stat-card">
+        <div>
+            <div class="stat-label">Total Tasks</div>
+            <div class="stat-val">{{ completed_tasks }} / {{ total_tasks }}</div>
+        </div>
+        <div class="stat-icon">⚡</div>
+    </div>
+</div>
+
+<!-- Recent Tasks & Activity -->
+<div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1.5rem;">
+    <div class="glass-card">
+        <h3 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem;">Recent Tasks</h3>
+        <div class="table-responsive">
+            <table class="custom-table">
+                <thead>
+                    <tr>
+                        <th>Task Name</th>
+                        <th>Source → Target</th>
+                        <th>Status</th>
+                        <th>Progress</th>
+                        <th>Added</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for task in recent_tasks %}
+                    <tr>
+                        <td><strong>{{ task.name }}</strong></td>
+                        <td style="font-size: 0.85rem; color: var(--text-muted);">
+                            {{ task.source_group_link[:15] }}... → {{ task.target_group_link[:15] }}...
+                        </td>
+                        <td>
+                            <span class="badge badge-{% if task.status == 'completed' %}success{% elif task.status == 'failed' %}danger{% else %}info{% endif %}">
+                                {{ task.status }}
+                            </span>
+                        </td>
+                        <td style="width: 120px;">
+                            <div class="progress-bar-bg">
+                                <div class="progress-bar-fill" style="width: {{ task.progress }}%;"></div>
+                            </div>
+                        </td>
+                        <td>{{ task.members_added }} / {{ task.members_scraped }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="5" style="text-align: center; color: var(--text-muted);">No recent tasks. Click "+ New Scrape & Add Task" to begin!</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="glass-card">
+        <h3 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem;">Recent Activity Logs</h3>
+        <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+            {% for log in recent_logs %}
+            <div style="padding: 0.75rem; background: rgba(15, 23, 42, 0.5); border-radius: 8px; font-size: 0.85rem; border-left: 3px solid {% if log.log_type == 'error' %}var(--danger-color){% elif log.log_type == 'success' %}var(--accent-color){% else %}var(--primary-color){% endif %};">
+                <div style="display: flex; justify-content: space-between; font-weight: 500; margin-bottom: 0.25rem;">
+                    <span>{{ log.log_type | upper }}</span>
+                    <span style="color: var(--text-muted); font-size: 0.75rem;">{{ log.created_at.strftime('%H:%M:%S') }}</span>
+                </div>
+                <div>{{ log.message }}</div>
+            </div>
+            {% else %}
+            <div style="color: var(--text-muted); font-size: 0.85rem;">No recent logs.</div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endblock %}
