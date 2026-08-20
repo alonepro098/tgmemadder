@@ -2,7 +2,7 @@ import asyncio
 import logging
 from telethon import TelegramClient, functions, types, errors
 from telethon.sessions import StringSession
-from telethon.tl.types import User, Channel, Chat, InputPeerChannel, InputPeerUser, UserStatusRecently, UserStatusOnline
+from telethon.tl.types import User, Channel, Chat, InputPeerChannel, InputPeerUser, InputUser, UserStatusRecently, UserStatusOnline
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -162,7 +162,7 @@ class TelegramAPI:
             raise e
 
     async def add_members_with_delay(self, session_string, target_group_entity, members_list, delay=3, progress_callback=None):
-        """Add members to target group with delay and error handling"""
+        """Add members to target group with delay and real-time progress callbacks"""
         client = self.create_client(session_string)
         await client.connect()
         
@@ -175,7 +175,11 @@ class TelegramAPI:
             
             for index, member in enumerate(members_list):
                 try:
-                    user_to_add = await client.get_input_entity(member['id'])
+                    # Construct InputUser directly using scraped ID and access hash
+                    if member.get('access_hash'):
+                        user_to_add = InputUser(member['id'], member['access_hash'])
+                    else:
+                        user_to_add = await client.get_input_entity(member['id'])
                     
                     if isinstance(target_input, InputPeerChannel):
                         await client(functions.channels.InviteToChannelRequest(
@@ -190,11 +194,12 @@ class TelegramAPI:
                         ))
                     
                     added_count += 1
-                    logger.info(f"Successfully added member {member.get('username') or member.get('id')}")
+                    logger.info(f"[{index+1}/{len(members_list)}] Successfully added member {member.get('username') or member.get('id')}")
                     
                 except errors.UserPrivacyRestrictedError:
                     failed_count += 1
                     failed_members.append({'member': member, 'reason': 'Privacy settings restricted'})
+                    logger.warning(f"Privacy restricted for member {member.get('id')}")
                 except errors.UserChannelsTooMuchError:
                     failed_count += 1
                     failed_members.append({'member': member, 'reason': 'User in too many channels'})
@@ -205,6 +210,8 @@ class TelegramAPI:
                     logger.warning(f"Flood wait required for {e.seconds} seconds.")
                     failed_count += 1
                     failed_members.append({'member': member, 'reason': f'FloodWait {e.seconds}s'})
+                    if progress_callback:
+                        await progress_callback(index + 1, len(members_list), added_count, failed_count)
                     await asyncio.sleep(min(e.seconds, 60))
                     break
                 except Exception as e:
