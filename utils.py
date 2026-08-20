@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class TaskManager:
     @staticmethod
     def process_task(task_id):
-        """Process a scraping and member adding task"""
+        """Process a scraping and member adding task with real-time updates"""
         from app import create_app
         app = create_app()
         
@@ -69,13 +69,24 @@ class TaskManager:
                     db.session.commit()
                     return {'status': 'success', 'scraped': 0, 'added': 0, 'failed': 0}
 
-                # Step 2: Add Members
+                # Real-time progress callback
+                async def update_add_progress(current_idx, total_count, current_added, current_failed):
+                    with app.app_context():
+                        t = ScrapingTask.query.get(task_id)
+                        if t:
+                            t.members_added = current_added
+                            t.members_failed = current_failed
+                            t.progress = 40 + int((current_idx / total_count) * 60)
+                            db.session.commit()
+
+                # Step 2: Add Members with real-time callback
                 added, failed, failed_members = asyncio.run(
                     telegram.add_members_with_delay(
                         session.session_string,
                         target_res['entity'],
                         members,
-                        delay=task.delay_between_adds
+                        delay=task.delay_between_adds,
+                        progress_callback=update_add_progress
                     )
                 )
                 
