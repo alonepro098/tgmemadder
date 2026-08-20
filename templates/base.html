@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}TG Member Adder{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+{% if current_user.is_authenticated %}
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+        <div class="brand">
+            <span>⚡ TG MemAdder</span>
+        </div>
+        <ul class="nav-menu">
+            <li>
+                <a href="{{ url_for('admin.dashboard') }}" class="nav-link {% if request.endpoint == 'admin.dashboard' %}active{% endif %}">
+                    📊 Dashboard
+                </a>
+            </li>
+            <li>
+                <a href="{{ url_for('admin.tasks') }}" class="nav-link {% if request.endpoint == 'admin.tasks' %}active{% endif %}">
+                    🚀 Scrape & Add Tasks
+                </a>
+            </li>
+            <li>
+                <a href="{{ url_for('admin.sessions') }}" class="nav-link {% if request.endpoint == 'admin.sessions' %}active{% endif %}">
+                    📱 TG Sessions
+                </a>
+            </li>
+            <li>
+                <a href="{{ url_for('admin.logs') }}" class="nav-link {% if request.endpoint == 'admin.logs' %}active{% endif %}">
+                    📋 System Logs
+                </a>
+            </li>
+            <li>
+                <a href="{{ url_for('admin.settings') }}" class="nav-link {% if request.endpoint == 'admin.settings' %}active{% endif %}">
+                    ⚙️ Settings
+                </a>
+            </li>
+            <li style="margin-top: auto;">
+                <a href="{{ url_for('admin.logout') }}" class="nav-link" style="color: var(--danger-color);">
+                    🚪 Logout
+                </a>
+            </li>
+        </ul>
+    </aside>
+{% endif %}
+
+    <!-- Main Content -->
+    <main class="main-content" {% if not current_user.is_authenticated %}style="margin-left: 0; width: 100%; min-height: 100vh; display: flex; align-items: center; justify-content: center;"{% endif %}>
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div style="margin-bottom: 1.5rem;">
+                    {% for category, message in messages %}
+                        <div class="glass-card badge-{{ category }}" style="padding: 1rem; margin-bottom: 0.5rem;">
+                            {{ message }}
+                        </div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </main>
+
+    <script src="{{ url_for('static', filename='main.js') }}"></script>
+</body>
+</html>
