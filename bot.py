@@ -61,6 +61,34 @@ def escape_markdown(text):
         text = text.replace(char, f'\\{char}')
     return text
 
+async def safe_edit_message(query, text, reply_markup=None):
+    """Safely edit query message handling Markdown parse errors and unmodified errors"""
+    try:
+        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+    except Exception as e:
+        try:
+            await query.edit_message_text(text, reply_markup=reply_markup)
+        except Exception:
+            pass
+
+async def render_sessions_menu(query):
+    with app.app_context():
+        sessions = UserSession.query.all()
+        text = "📱 **Registered Telegram Sessions**\n\n"
+        keyboard = []
+        if not sessions:
+            text += "No active Telegram sessions found."
+        else:
+            for s in sessions:
+                status = "✅ Active" if s.is_active else "❌ Inactive"
+                text += f"• **{s.phone_number}** ({status}) - ID: `{s.id}`\n"
+                keyboard.append([InlineKeyboardButton(f"🗑 Remove Session {s.phone_number}", callback_data=f"delete_session_{s.id}")])
+
+        keyboard.append([InlineKeyboardButton("➕ Add Session (Phone OTP)", callback_data="session_add_otp")])
+        keyboard.append([InlineKeyboardButton("🔑 Add String Session", callback_data="session_add_string")])
+        keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")])
+        await safe_edit_message(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     user = update.effective_user
@@ -73,7 +101,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
         await update.message.reply_text(welcome_text, parse_mode='Markdown', reply_markup=get_main_keyboard())
     elif update.callback_query:
-        await update.callback_query.edit_message_text(welcome_text, parse_mode='Markdown', reply_markup=get_main_keyboard())
+        await safe_edit_message(update.callback_query, welcome_text, reply_markup=get_main_keyboard())
     return ConversationHandler.END
 
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -83,67 +111,45 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "menu_main":
         context.user_data.clear()
-        try:
-            await query.edit_message_text("⚡ **Main Menu**\nSelect an option below:", parse_mode='Markdown', reply_markup=get_main_keyboard())
-        except Exception:
-            pass
+        await safe_edit_message(query, "⚡ **Main Menu**\nSelect an option below:", reply_markup=get_main_keyboard())
         return ConversationHandler.END
 
     elif data == "menu_sessions":
-        with app.app_context():
-            sessions = UserSession.query.all()
-            text = "📱 **Registered Telegram Sessions**\n\n"
-            keyboard = []
-            if not sessions:
-                text += "No active Telegram sessions found."
-            else:
-                for s in sessions:
-                    status = "✅ Active" if s.is_active else "❌ Inactive"
-                    text += f"• **{s.phone_number}** ({status}) - ID: `{s.id}`\n"
-                    keyboard.append([InlineKeyboardButton(f"🗑 Remove Session {s.phone_number}", callback_data=f"delete_session_{s.id}")])
-
-            keyboard.append([InlineKeyboardButton("➕ Add Session (Phone OTP)", callback_data="session_add_otp")])
-            keyboard.append([InlineKeyboardButton("🔑 Add String Session", callback_data="session_add_string")])
-            keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")])
-            try:
-                await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
-            except Exception:
-                pass
-            return ConversationHandler.END
+        await render_sessions_menu(query)
+        return ConversationHandler.END
 
     elif data.startswith("delete_session_"):
         sess_id = int(data.split("_")[-1])
         with app.app_context():
-            # Delete related tasks first to preserve DB foreign key constraints
             ScrapingTask.query.filter_by(user_session_id=sess_id).delete()
             sess = UserSession.query.get(sess_id)
             if sess:
                 phone_num = sess.phone_number
                 db.session.delete(sess)
                 db.session.commit()
-                await query.answer(f"Session {phone_num} removed!")
+                await query.answer(f"Session {phone_num} removed!", show_alert=True)
             else:
-                await query.answer("Session not found!")
+                await query.answer("Session not found!", show_alert=True)
         
-        # Refresh sessions view
-        return await menu_callback(update, context)
+        await render_sessions_menu(query)
+        return ConversationHandler.END
 
     elif data == "session_add_otp":
         keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="menu_main")]]
-        await query.edit_message_text(
+        await safe_edit_message(
+            query,
             "📱 **Add Telegram Session via Phone OTP**\n\n"
             "Please send your Telegram phone number with country code (e.g. `+919876543210`):",
-            parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return WAITING_PHONE
 
     elif data == "session_add_string":
         keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="menu_main")]]
-        await query.edit_message_text(
+        await safe_edit_message(
+            query,
             "🔑 **Add Telethon String Session**\n\n"
             "Please send phone number first (e.g. `+919876543210`):",
-            parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return WAITING_STRING_PHONE
@@ -153,10 +159,10 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sessions = UserSession.query.filter_by(is_active=True).all()
             if not sessions:
                 keyboard = [[InlineKeyboardButton("➕ Add Session", callback_data="session_add_otp")], [InlineKeyboardButton("🔙 Back", callback_data="menu_main")]]
-                await query.edit_message_text(
+                await safe_edit_message(
+                    query,
                     "⚠️ **No active Telegram sessions!**\n"
                     "Please add a Telegram session first before creating a task.",
-                    parse_mode='Markdown',
                     reply_markup=InlineKeyboardMarkup(keyboard)
                 )
                 return ConversationHandler.END
@@ -166,17 +172,17 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 keyboard.append([InlineKeyboardButton(f"📱 {s.phone_number}", callback_data=f"select_sess_{s.id}")])
             keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="menu_main")])
 
-            await query.edit_message_text("🚀 **New Task: Step 1/4**\nSelect Telegram Session to use for scraping/adding:", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+            await safe_edit_message(query, "🚀 **New Task: Step 1/4**\nSelect Telegram Session to use for scraping/adding:", reply_markup=InlineKeyboardMarkup(keyboard))
             return ConversationHandler.END
 
     elif data.startswith("select_sess_"):
         sess_id = int(data.split("_")[-1])
         context.user_data['session_id'] = sess_id
         keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="menu_main")]]
-        await query.edit_message_text(
+        await safe_edit_message(
+            query,
             "🚀 **New Task: Step 2/4**\n\n"
             "Send the **Source Group/Channel Link or Username** (e.g., `@sourcegroup` or `https://t.me/sourcegroup`):",
-            parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return WAITING_SOURCE_LINK
@@ -185,10 +191,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with app.app_context():
             tasks = ScrapingTask.query.order_by(ScrapingTask.created_at.desc()).limit(5).all()
             if not tasks:
-                try:
-                    await query.edit_message_text("📊 **Task Status**\n\nNo tasks found.", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu_main")]]))
-                except Exception:
-                    pass
+                await safe_edit_message(query, "📊 **Task Status**\n\nNo tasks found.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu_main")]]))
                 return ConversationHandler.END
 
             text = "📊 **Recent Tasks Status**\n\n"
@@ -205,10 +208,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data="menu_status")])
             keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")])
-            try:
-                await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
-            except Exception:
-                pass
+            await safe_edit_message(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
             return ConversationHandler.END
 
     elif data.startswith("cancel_task_"):
@@ -219,21 +219,21 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 t.status = 'cancelled'
                 db.session.commit()
         await query.answer("Task cancelled!")
-        await query.edit_message_text("Task cancelled successfully.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu_status")]]))
+        await safe_edit_message(query, "Task cancelled successfully.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu_status")]]))
         return ConversationHandler.END
 
     elif data == "menu_export":
         with app.app_context():
             tasks = ScrapingTask.query.filter(ScrapingTask.members_scraped > 0).all()
             if not tasks:
-                await query.edit_message_text("📥 **Export Excel**\n\nNo completed task records found to export.", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu_main")]]))
+                await safe_edit_message(query, "📥 **Export Excel**\n\nNo completed task records found to export.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu_main")]]))
                 return ConversationHandler.END
 
             keyboard = []
             for t in tasks:
                 keyboard.append([InlineKeyboardButton(f"📄 Task #{t.id} ({t.members_scraped} members)", callback_data=f"do_export_{t.id}")])
             keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="menu_main")])
-            await query.edit_message_text("📥 **Select Task to Export Excel Report:**", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+            await safe_edit_message(query, "📥 **Select Task to Export Excel Report:**", reply_markup=InlineKeyboardMarkup(keyboard))
             return ConversationHandler.END
 
     elif data.startswith("do_export_"):
@@ -267,10 +267,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg = escape_markdown(l.message)
                 text += f"• `{l.created_at.strftime('%H:%M:%S')}` **[{l.log_type.upper()}]** {msg}\n"
             keyboard = [[InlineKeyboardButton("🔄 Refresh", callback_data="menu_logs")], [InlineKeyboardButton("🔙 Back", callback_data="menu_main")]]
-            try:
-                await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
-            except Exception:
-                pass
+            await safe_edit_message(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
             return ConversationHandler.END
 
     elif data == "menu_settings":
@@ -283,10 +280,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"• **Safe Mode**: `{st.get('safe_mode', 'true')}`\n"
             )
             keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")]]
-            try:
-                await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
-            except Exception:
-                pass
+            await safe_edit_message(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
             return ConversationHandler.END
 
 # OTP Handlers
