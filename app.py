@@ -1,17 +1,14 @@
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, flash
-from flask_login import LoginManager, login_user, logout_user, login_required, current_user
-from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager
 from flask_migrate import Migrate
 from flask_caching import Cache
 from flask_cors import CORS
 from database import db, Admin, UserSession, ScrapingTask, BroadcastMessage, Group, SystemLog, Settings
-from telegram_api import TelegramAPI
 from config import Config
-from datetime import datetime, timedelta
+from datetime import datetime
 import bcrypt
 import logging
 from celery import Celery
-import json
 import os
 
 # Initialize extensions
@@ -37,7 +34,7 @@ def create_app():
     # Initialize extensions
     db.init_app(app)
     login_manager.init_app(app)
-    login_manager.login_view = 'admin_login'
+    login_manager.login_view = 'admin.login'
     migrate.init_app(app, db)
     cache.init_app(app)
     cors.init_app(app)
@@ -51,7 +48,11 @@ def create_app():
     app.register_blueprint(admin_bp, url_prefix='/admin')
     app.register_blueprint(api_bp, url_prefix='/api')
     
-    # Create tables
+    @app.route('/')
+    def index():
+        return redirect(url_for('admin.dashboard'))
+    
+    # Create tables & default admin
     with app.app_context():
         db.create_all()
         create_default_admin()
@@ -59,11 +60,15 @@ def create_app():
     # Error handlers
     @app.errorhandler(404)
     def not_found(error):
-        return jsonify({'error': 'Not found'}), 404
+        if request.path.startswith('/api/'):
+            return jsonify({'error': 'Not found'}), 404
+        return render_template('base.html', content="<div class='glass-card text-center p-5'><h2>404 - Page Not Found</h2><a href='/admin/dashboard' class='btn btn-primary mt-3'>Go to Dashboard</a></div>"), 404
     
     @app.errorhandler(500)
     def internal_error(error):
-        return jsonify({'error': 'Internal server error'}), 500
+        if request.path.startswith('/api/'):
+            return jsonify({'error': 'Internal server error'}), 500
+        return render_template('base.html', content="<div class='glass-card text-center p-5'><h2>500 - Server Error</h2><a href='/admin/dashboard' class='btn btn-primary mt-3'>Go to Dashboard</a></div>"), 500
     
     return app
 
@@ -87,7 +92,7 @@ def create_default_admin():
         
         # Create default settings
         default_settings = {
-            'default_delay': '2',
+            'default_delay': '3',
             'max_members': '1000',
             'auto_join': 'true',
             'safe_mode': 'true',
@@ -135,4 +140,5 @@ def cleanup_sessions():
 
 if __name__ == '__main__':
     app = create_app()
+    print("🚀 Starting Telegram Member Adder Server at http://127.0.0.1:5000")
     app.run(debug=True, host='0.0.0.0', port=5000)
