@@ -31,12 +31,13 @@ logger = logging.getLogger(__name__)
 (
     WAITING_PHONE,
     WAITING_OTP,
+    WAITING_2FA,
     WAITING_STRING_PHONE,
     WAITING_STRING,
     WAITING_SOURCE_LINK,
     WAITING_TARGET_LINK,
     WAITING_MAX_MEMBERS,
-) = range(7)
+) = range(8)
 
 def get_db_app():
     from app import create_app
@@ -52,11 +53,21 @@ def get_main_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
+def escape_markdown(text):
+    """Safely sanitize text for Markdown parsing"""
+    if not text:
+        return ""
+    # Characters that need escaping in Telegram Markdown v1
+    for char in ['_', '*', '`', '[']:
+        text = text.replace(char, f'\\{char}')
+    return text
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     user = update.effective_user
+    first_name = escape_markdown(user.first_name)
     welcome_text = (
-        f"👋 **Welcome {user.first_name} to Telegram Member Adder Bot!**\n\n"
+        f"👋 **Welcome {first_name} to Telegram Member Adder Bot!**\n\n"
         f"Power-packed Telegram group member scraper and auto-adder tool.\n"
         f"Select an option from the menu below to get started:"
     )
@@ -73,7 +84,10 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "menu_main":
         context.user_data.clear()
-        await query.edit_message_text("⚡ **Main Menu**\nSelect an option below:", parse_mode='Markdown', reply_markup=get_main_keyboard())
+        try:
+            await query.edit_message_text("⚡ **Main Menu**\nSelect an option below:", parse_mode='Markdown', reply_markup=get_main_keyboard())
+        except Exception:
+            pass
         return ConversationHandler.END
 
     elif data == "menu_sessions":
@@ -92,7 +106,10 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🔑 Add String Session", callback_data="session_add_string")],
                 [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")]
             ]
-            await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+            try:
+                await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+            except Exception:
+                pass
             return ConversationHandler.END
 
     elif data == "session_add_otp":
@@ -152,14 +169,18 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with app.app_context():
             tasks = ScrapingTask.query.order_by(ScrapingTask.created_at.desc()).limit(5).all()
             if not tasks:
-                await query.edit_message_text("📊 **Task Status**\n\nNo tasks found.", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu_main")]]))
+                try:
+                    await query.edit_message_text("📊 **Task Status**\n\nNo tasks found.", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu_main")]]))
+                except Exception:
+                    pass
                 return ConversationHandler.END
 
             text = "📊 **Recent Tasks Status**\n\n"
             keyboard = []
             for t in tasks:
+                t_name = escape_markdown(t.name)
                 text += (
-                    f"• **Task #{t.id}**: {t.name}\n"
+                    f"• **Task #{t.id}**: {t_name}\n"
                     f"  Status: `{t.status}` | Progress: `{t.progress}%`\n"
                     f"  Scraped: `{t.members_scraped}` | Added: `{t.members_added}` | Failed: `{t.members_failed}`\n\n"
                 )
@@ -168,7 +189,10 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data="menu_status")])
             keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")])
-            await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+            try:
+                await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+            except Exception:
+                pass
             return ConversationHandler.END
 
     elif data.startswith("cancel_task_"):
@@ -224,9 +248,13 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logs = SystemLog.query.order_by(SystemLog.created_at.desc()).limit(8).all()
             text = "📋 **Recent System Logs**\n\n"
             for l in logs:
-                text += f"• `{l.created_at.strftime('%H:%M:%S')}` **[{l.log_type.upper()}]** {l.message}\n"
+                msg = escape_markdown(l.message)
+                text += f"• `{l.created_at.strftime('%H:%M:%S')}` **[{l.log_type.upper()}]** {msg}\n"
             keyboard = [[InlineKeyboardButton("🔄 Refresh", callback_data="menu_logs")], [InlineKeyboardButton("🔙 Back", callback_data="menu_main")]]
-            await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+            try:
+                await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+            except Exception:
+                pass
             return ConversationHandler.END
 
     elif data == "menu_settings":
@@ -239,7 +267,10 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"• **Safe Mode**: `{st.get('safe_mode', 'true')}`\n"
             )
             keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")]]
-            await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+            try:
+                await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+            except Exception:
+                pass
             return ConversationHandler.END
 
 # OTP Handlers
@@ -267,15 +298,47 @@ async def handle_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         tg = TelegramAPI()
         res = await tg.sign_in_with_code(phone, pch, otp, ts)
+        
         if res.get('status') == 'success':
             with app.app_context():
                 sess = UserSession(phone_number=phone, session_string=res['session_string'], is_active=True)
                 db.session.add(sess)
                 db.session.commit()
             await update.message.reply_text("✅ **Session added successfully!**", parse_mode='Markdown', reply_markup=get_main_keyboard())
-        return ConversationHandler.END
+            return ConversationHandler.END
+            
+        elif res.get('status') == 'password_needed':
+            context.user_data['temp_session'] = res['session_string']
+            keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="menu_main")]]
+            await update.message.reply_text(
+                "🔒 **Two-Step Verification (2FA) is Enabled!**\n\n"
+                "Please enter your Telegram 2FA Password below:",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return WAITING_2FA
+            
     except Exception as e:
         await update.message.reply_text(f"❌ Verification failed: {e}", reply_markup=get_main_keyboard())
+        return ConversationHandler.END
+
+async def handle_2fa_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    password = update.message.text.strip()
+    phone = context.user_data['phone']
+    ts = context.user_data['temp_session']
+    await update.message.reply_text("⏳ Verifying 2FA Password...")
+    try:
+        tg = TelegramAPI()
+        res = await tg.sign_in_with_password(password, ts)
+        if res.get('status') == 'success':
+            with app.app_context():
+                sess = UserSession(phone_number=phone, session_string=res['session_string'], is_active=True)
+                db.session.add(sess)
+                db.session.commit()
+            await update.message.reply_text("✅ **Session added successfully with 2FA!**", parse_mode='Markdown', reply_markup=get_main_keyboard())
+        return ConversationHandler.END
+    except Exception as e:
+        await update.message.reply_text(f"❌ 2FA Verification failed: {e}", reply_markup=get_main_keyboard())
         return ConversationHandler.END
 
 # String Session Handlers
@@ -341,7 +404,6 @@ async def handle_max_members(update: Update, context: ContextTypes.DEFAULT_TYPE)
         reply_markup=get_main_keyboard()
     )
 
-    # Launch task processing asynchronously
     asyncio.create_task(run_background_task(task_id))
     return ConversationHandler.END
 
@@ -353,7 +415,7 @@ def main():
         print("[!] ERROR: BOT_TOKEN missing in .env!")
         return
 
-    print("🚀 Starting Telegram Bot (Single Clean Instance)...")
+    print("🚀 Starting Telegram Bot...")
     req = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0, write_timeout=30.0)
     application = ApplicationBuilder().token(Config.BOT_TOKEN).request(req).build()
 
@@ -365,6 +427,7 @@ def main():
         states={
             WAITING_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_phone)],
             WAITING_OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_otp)],
+            WAITING_2FA: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_2fa_password)],
             WAITING_STRING_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_string_phone)],
             WAITING_STRING: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_string_session)],
             WAITING_SOURCE_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_source_link)],
